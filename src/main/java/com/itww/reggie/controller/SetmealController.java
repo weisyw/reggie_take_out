@@ -1,11 +1,14 @@
 package com.itww.reggie.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.itww.reggie.common.R;
 import com.itww.reggie.dto.DishDto;
 import com.itww.reggie.dto.SetmealDto;
 import com.itww.reggie.entity.*;
+import com.itww.reggie.mapper.DishMapper;
+import com.itww.reggie.mapper.SetmealDishMapper;
 import com.itww.reggie.service.CategoryService;
 import com.itww.reggie.service.DishService;
 import com.itww.reggie.service.SetmealDishService;
@@ -13,8 +16,11 @@ import com.itww.reggie.service.SetmealService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -38,6 +44,10 @@ public class SetmealController {
     private CategoryService categoryService;
     @Autowired
     private DishService dishService;
+    @Autowired
+    private SetmealDishMapper setmealDishMapper;
+    @Autowired
+    private DishMapper dishMapper;
 
 
     /**
@@ -46,6 +56,7 @@ public class SetmealController {
      * @return
      */
     @PostMapping
+    @CacheEvict(value = "setmealCache", allEntries = true) // 清理所有缓存数据
     public R<String> save(@RequestBody SetmealDto setmealDto) {
         log.info("新增套餐信息：{}", setmealDto);
         setmealService.saveWithDish(setmealDto);
@@ -84,6 +95,7 @@ public class SetmealController {
      * @return
      */
     @DeleteMapping
+    @CacheEvict(value = "setmealCache", allEntries = true) // 清理所有缓存数据
     public R<String> delete(@RequestParam List<Long> ids) {
         log.info("要删除的套餐信息为:{}",ids);
         setmealService.removeWithDish(ids);
@@ -107,6 +119,7 @@ public class SetmealController {
      * @return
      */
     @PutMapping
+    @CacheEvict(value = "setmealCache", allEntries = true) // 清理所有缓存数据
     public R<String> update(@RequestBody SetmealDto setmealDto){
         setmealService.update(setmealDto);
         return R.success("更新成功");
@@ -126,6 +139,7 @@ public class SetmealController {
      * @param setmeal
      * @return
      */
+    @Cacheable(value = "setmealCache", key = "#setmeal.categoryId + '_' + #setmeal.status")
     @GetMapping("/list")
     public R<List<Setmeal>> list(Setmeal setmeal){
         LambdaQueryWrapper<Setmeal> queryWrapper = new LambdaQueryWrapper<>();
@@ -137,19 +151,36 @@ public class SetmealController {
     }
 
 
-    @GetMapping("/dish/{ids}")
-    public R<List<Dish>> getSetMeal(@PathVariable Long ids){
-        Setmeal setmeal = setmealService.getById(ids);
-        LambdaQueryWrapper<SetmealDish> queryWrapper = new LambdaQueryWrapper<>();
-        queryWrapper.eq(SetmealDish::getSetmealId,setmeal.getId());
-        List<SetmealDish> setmealDishList = setmealDishService.list(queryWrapper);
-        log.info("所有的关联菜品：{}",setmealDishList.toString());
-        List<Dish> dishList = null;
-        for (SetmealDish setmealDish : setmealDishList) {
-            LambdaQueryWrapper<Dish> lambdaQueryWrapper = new LambdaQueryWrapper<>();
-            lambdaQueryWrapper.eq(Dish::getId, setmealDish.getDishId());
-            dishList = dishService.list(lambdaQueryWrapper);
+    /**
+     * 套餐详情
+     * @param id
+     * @return
+     */
+    @GetMapping("/dish/{id}")
+    public R<List<DishDto>> getDish(@PathVariable Long id){
+        QueryWrapper<SetmealDish> queryWrapper = new QueryWrapper<>();
+        queryWrapper.eq("setmeal_id", id);
+        List<SetmealDish> setmealDishes = setmealDishMapper.selectList(queryWrapper);
+        List<Long> list = new ArrayList<>();
+        for (SetmealDish item : setmealDishes) {
+            list.add(item.getDishId());
         }
-        return R.success(dishList);
+        QueryWrapper<Dish> dishQueryWrapper = new QueryWrapper<>();
+        dishQueryWrapper.in("id", list);
+        List<Dish> dishes = dishMapper.selectList(dishQueryWrapper);
+        List<DishDto> dishDtos = dishes.stream().map((item) ->{
+            DishDto dishDto = new DishDto();
+            BeanUtils.copyProperties(item, dishDto);
+            return dishDto;
+        }).collect(Collectors.toList());
+
+        for (DishDto dishDto : dishDtos) {
+            for (SetmealDish setmealDish : setmealDishes) {
+                if(setmealDish.getDishId().equals(dishDto.getId())){
+                    dishDto.setCopies(setmealDish.getCopies());
+                }
+            }
+        }
+        return R.success(dishDtos);
     }
 }
